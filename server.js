@@ -11,9 +11,11 @@ const server = http.createServer((req, res) => {
     return res.end("ok\n");
   }
   if (url.pathname === "/hog") {
-    // Allocate and retain `mb` megabytes so the container exceeds its memory limit.
-    const mb = Number(url.searchParams.get("mb") ?? 256);
-    for (let i = 0; i < mb; i++) hoard.push(Buffer.alloc(1024 * 1024, i % 251));
+    // Allocate and retain `mb` megabytes in large touched chunks so the container blows through its
+    // memory limit fast enough for the kernel to OOM-kill it rather than thrash at the ceiling.
+    const mb = Number(url.searchParams.get("mb") ?? 1024);
+    const chunkMb = 64;
+    for (let allocated = 0; allocated < mb; allocated += chunkMb) hoard.push(Buffer.alloc(chunkMb * 1024 * 1024, 1));
     res.writeHead(200, { "content-type": "text/plain" });
     return res.end(`hoarding ${hoard.length} MB\n`);
   }
