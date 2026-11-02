@@ -3,6 +3,7 @@
 // each upstream call took is the OpenTelemetry histogram superapp.upstream.duration, exported for Prometheus on
 // METRICS_PORT. Its memory use can still be driven up on demand (/hog), for the OOMKilled scenarios.
 import http from "node:http";
+import https from "node:https";
 import { metrics } from "@opentelemetry/api";
 import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
 import { MeterProvider } from "@opentelemetry/sdk-metrics";
@@ -37,17 +38,41 @@ function logFailure(status, ms) {
   lastLog = Date.now();
 }
 
+// A connection of its own for every call to superapp2, closed once it has answered (Connection: close).
+// superapp2's Service is balanced by kube-proxy per connection, not per request: kept-alive connections, which
+// fetch uses by default, pin every call to the superapp2 pod they first reached, so its other replicas get no load.
+const upstreamClient = new URL(upstream).protocol === "https:" ? https : http;
+const upstreamAgent = new upstreamClient.Agent({ keepAlive: false });
+
+/** GETs url on a fresh connection; resolves with its status code and body, rejects on failure or when signal aborts. */
+function getOnce(url, signal) {
+  return new Promise((resolve, reject) => {
+    const req = upstreamClient.get(url, { agent: upstreamAgent, signal }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+  });
+}
+
 /** Calls the upstream once, records how long it took, and gives back its answer or why it failed. */
 async function callUpstream(source) {
   const started = performance.now();
   let status = "ok";
   let answer = null;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
-    const response = await fetch(upstream, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!response.ok) status = `http ${response.status}`;
-    answer = await response.json().catch(() => null);
+    const response = await getOnce(upstream, signal);
+    if (response.status < 200 || response.status >= 300) status = `http ${response.status}`;
+    try {
+      answer = JSON.parse(response.body);
+    } catch {
+      answer = null;
+    }
   } catch (error) {
-    status = error.name === "TimeoutError" ? "timeout" : `error ${error.cause?.code ?? error.message}`;
+    status = signal.aborted ? "timeout" : `error ${error.code ?? error.message}`;
   }
   const ms = performance.now() - started;
   if (status !== "ok") logFailure(status, ms);
