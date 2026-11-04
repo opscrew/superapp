@@ -18,4 +18,4 @@ How long each call to superapp2 took is the OpenTelemetry histogram `superapp.up
 | `LOAD_RPS` | `0` | the load at start |
 | `METRICS_PORT` | `9464` | |
 
-Deployed by [superapp-infra](../superapp-infra) with Pulumi. The GitHub Actions workflow publishes `ghcr.io/<org>/superapp`.
+Deployed by [superapp-infra](../superapp-infra), whose Kustomize manifests Argo CD syncs. The GitHub Actions workflow publishes `ghcr.io/<org>/superapp`.
